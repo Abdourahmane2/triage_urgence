@@ -1,6 +1,7 @@
 import torch
 import json
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+import torch.nn.functional as F
 
 class ClinicalTriageClassifier:
     def __init__(self):
@@ -9,14 +10,25 @@ class ClinicalTriageClassifier:
         self.model_name = "medicalai/ClinicalBERT"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         
+        # Chargement du modèle avec une tête de classification pour 4 classes
+        # Note: En production, ce modèle devrait être fine-tuné sur des données de triage
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            self.model_name,
+            num_labels=4,
+            problem_type="single_label_classification"
+        )
+        
         # Labels demandés
         self.labels = ["GRIS", "VERT", "JAUNE", "ROUGE"]
+        self.label_to_id = {label: idx for idx, label in enumerate(self.labels)}
+        self.id_to_label = {idx: label for idx, label in enumerate(self.labels)}
         self.label_desc = {
             "GRIS": "Ne nécessite pas les urgences, ni de voir rapidement un médecin généraliste. Situation stable.",
             "VERT": "Pathologie non vitale et non urgente. Consultation classique.",
             "JAUNE": "Pathologie non vitale mais urgente. Nécessite une prise en charge rapide.",
             "ROUGE": "Pathologie potentiellement vitale et urgente. Détresse vitale suspectée."
         }
+        self.model.eval()  # Mode évaluation
 
     def _prepare_input_text(self, id_data, const_data, symptoms_json):
         """
@@ -84,16 +96,25 @@ class ClinicalTriageClassifier:
         input_text = self._prepare_input_text(id_data, const_data, symptoms_json)
         
         # Utilisation de Zero-Shot Classification (approche la plus robuste sans dataset d'entraînement)
-        # Note: medicalai/ClinicalBERT est souvent utilisé avec un classifieur par-dessus
-        classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli") 
-        # Note technique : Pour ClinicalBERT pur, il faudrait un entraînement supervisé.
-        # Ici, nous utilisons une logique hybride ou le texte "embeddé" par ClinicalBERT.
+       # Tokenisation du texte pour ClinicalBERT
+        inputs = self.tokenizer(
+            input_text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
         
-        results = classifier(input_text, candidate_labels=self.labels)
+        # Inférence avec ClinicalBERT
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            logits = outputs.logits
+            probabilities = F.softmax(logits, dim=-1)
         
-        
-        score_final = results['labels'][0]
-        confiance = results['scores'][0]
+        # Récupération de la prédiction
+        predicted_class_id = torch.argmax(probabilities, dim=-1).item()
+        confidence = probabilities[0][predicted_class_id].item()
+        score_final = self.id_to_label[predicted_class_id]
         
         # Application du corpus de conditions prioritaires
         if check_vital_emergency_rules(id_data, const_data):
@@ -102,6 +123,10 @@ class ClinicalTriageClassifier:
 
         return {
             "niveau": score_final,
-            "confiance": confiance,
-            "resume_analyse": input_text
+            "confiance": confidence,
+            "resume_analyse": input_text,
+            "probabilites": {
+                label: probabilities[0][idx].item() 
+                for label, idx in self.label_to_id.items()
+            }
         }
