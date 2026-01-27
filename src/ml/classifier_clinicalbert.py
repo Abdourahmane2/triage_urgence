@@ -38,6 +38,41 @@ class ClinicalTriageClassifier:
         text += f"Intensité douleur: {symptoms_json.get('intensite_douleur')}/10."
         
         return text
+    def check_vital_emergency_rules(id_data, const_data):
+    """
+    Vérifie les critères d'alerte rouge basés sur les constantes et l'âge.
+    Retourne True si une condition 'ROUGE' est rencontrée.
+    """
+        age = id_data.get('age', 30)
+        temp = const_data.get('temp', 37.0)
+        fc = const_data.get('fc', 75)
+        tas = const_data.get('tas', 120)  # TA Systolique
+        spo2 = const_data.get('spo2', 98)
+
+    # 1. Condition d'origine : Hypoxie ou Tachycardie extrême
+        if spo2 < 90 or fc > 130:
+            return True
+
+    # 2. Nourrissons et fièvre (Age <= 1 an et Temp > 38)
+        if age <= 1 and temp > 38.0:
+            return True
+
+    # 3. Jeunes enfants et forte fièvre (Age <= 3 ans et Temp > 38.5)
+        if age <= 3 and temp > 38.5:
+            return True
+
+    # 4. Hypertension sévère (TA Systolique >= 170 mmHg ou 17 dans votre unité)
+    # Note : On vérifie 17 ou 170 selon le format de saisie habituel
+        if tas >= 170 or tas <= 20: # Gestion du cas où l'utilisateur saisit '17' au lieu de '170'
+            if tas >= 17:
+                return True
+
+    # 5. État de choc / Bradycardie (FC <= 50 et TA Systolique <= 9 ou 90)
+        tas_val = tas if tas > 20 else tas * 10 # Normalisation auto 9 -> 90
+        if fc <= 50 and tas_val <= 90:
+            return True
+
+        return False
 
     def classify_emergency(self, id_data, const_data, symptoms_json):
         """
@@ -54,14 +89,17 @@ class ClinicalTriageClassifier:
         
         results = classifier(input_text, candidate_labels=self.labels)
         
-        # Logique métier supplémentaire pour forcer "ROUGE" sur constantes critiques
-        score_final = results['labels'][0]
         
-        if const_data.get('spo2') < 90 or const_data.get('fc') > 130:
-            score_final = "ROUGE" # Sécurité médicale (hard-rule)
+        score_final = results['labels'][0]
+        confiance = results['scores'][0]
+        
+        # Application du corpus de conditions prioritaires
+        if check_vital_emergency_rules(id_data, const_data):
+            score_final = "ROUGE"
+            confiance = 1.0  # Force la confiance au maximum car règle médicale absolue
 
         return {
             "niveau": score_final,
-            "confiance": results['scores'][0],
+            "confiance": confiance,
             "resume_analyse": input_text
         }
