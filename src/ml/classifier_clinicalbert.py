@@ -38,10 +38,12 @@ class ClinicalTriageClassifier:
         text += f"Intensité douleur: {symptoms_json.get('intensite_douleur')}/10."
         
         return text
+        
     def check_vital_emergency_rules(id_data, const_data):
     """
     Vérifie les critères d'alerte rouge basés sur les constantes et l'âge.
     Retourne True si une condition 'ROUGE' est rencontrée.
+    Sources : Ameli.fr et Vidal.fr
     """
         age = id_data.get('age', 30)
         temp = const_data.get('temp', 37.0)
