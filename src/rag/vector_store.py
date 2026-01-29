@@ -1,204 +1,325 @@
 """
-Interface avec la base de données vectorielle.
-
-JUSTIFIER le choix de la base:
-- ChromaDB: Simple, persistance facile, bon pour prototype
-- FAISS: Plus performant à grande échelle, Facebook
-- Pinecone: Cloud, scalable, mais payant
-- Weaviate: Open source, features avancées
+Vector Store - Gestion de la base vectorielle ChromaDB
 """
 
-from typing import Optional
-from .embeddings import EmbeddingProvider
-
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+from typing import List, Dict, Optional
+from pathlib import Path
+import json
+from .document_loader import DocumentLoader  
 
 class VectorStore:
-    """Interface avec la base vectorielle."""
-
+    """Gère l'indexation et la recherche dans ChromaDB."""
+    
     def __init__(
-        self,
-        persist_path: str,
-        embedding_provider: EmbeddingProvider,
-        collection_name: str = "medical_docs"
-    ) -> None:
+        self, 
+        persist_directory: str = "data/vector_db",
+        collection_name: str = "triage_medical",
+        embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    ):
         """
-        Initialise la base vectorielle.
-
         Args:
-            persist_path: Chemin pour la persistance
-            embedding_provider: Provider d'embeddings
+            persist_directory: Dossier de persistance ChromaDB
             collection_name: Nom de la collection
-
-        JUSTIFIER: Pourquoi ChromaDB?
-        - Simple à utiliser
-        - Persistance automatique
-        - Pas de serveur externe
-        - Suffisant pour un projet de cette taille
+            embedding_model: Modèle d'embeddings (français supporté)
         """
-        import chromadb
-
-        # Sauvegarder l'embedding provider
-        self.embedding_provider = embedding_provider
+        self.persist_directory = Path(persist_directory)
+        self.persist_directory.mkdir(parents=True, exist_ok=True)
+        
+        # Initialiser ChromaDB avec persistance
+        self.client = chromadb.PersistentClient(
+            path=str(self.persist_directory),
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True
+            )
+        )
+        
+        # Charger le modèle d'embeddings
+        print(f"📥 Chargement modèle embeddings: {embedding_model}")
+        self.embedding_model = SentenceTransformer(embedding_model)
+        print("✅ Modèle chargé")
+        
+        # Créer ou récupérer collection
         self.collection_name = collection_name
-        self.persist_path = persist_path
-
-        # Créer le client ChromaDB avec persistance
-        self.client = chromadb.PersistentClient(path=persist_path)
-
-        # Créer ou récupérer la collection
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"}  # Similarité cosinus
-        )
-
-    def add_documents(
-        self,
-        documents: list[dict],
-        ids: Optional[list[str]] = None
-    ) -> None:
+        self.collection = self._get_or_create_collection()
+    
+    def _get_or_create_collection(self):
+        """Récupère ou crée la collection ChromaDB."""
+        try:
+            # Essayer de récupérer collection existante
+            collection = self.client.get_collection(name=self.collection_name)
+            print(f"✅ Collection '{self.collection_name}' chargée ({collection.count()} documents)")
+        except:
+            # Créer nouvelle collection
+            collection = self.client.create_collection(
+                name=self.collection_name,
+                metadata={"description": "Base de connaissances médicales pour triage"}
+            )
+            print(f"✅ Collection '{self.collection_name}' créée")
+        
+        return collection
+    
+    def add_documents(self, chunks: List[Dict]) -> None:
         """
-        Ajoute des documents à la base.
-
+        Ajoute des documents (chunks) à la collection.
+        
         Args:
-            documents: Liste de {"text": ..., "metadata": {...}}
-            ids: IDs optionnels (générés si absents)
+            chunks: Liste de dicts {content, metadata}
         """
-        if not documents:
-            return  # Rien à ajouter
-
-        # 1. Extraire les textes et métadonnées
-        texts = [doc["text"] for doc in documents]
-        metadatas = [doc.get("metadata", {}) for doc in documents]
-
-        # 2. Générer des IDs si absents
-        if ids is None:
-            import uuid
-            ids = [str(uuid.uuid4()) for _ in documents]
-
-        # 3. Générer les embeddings pour tous les textes
-        embeddings = self.embedding_provider.embed_batch(texts)
-
-        # 4. Ajouter à ChromaDB
-        self.collection.add(
-            ids=ids,
-            documents=texts,
-            embeddings=embeddings,
-            metadatas=metadatas
-        )
-
-    def add_texts(
-        self,
-        texts: list[str],
-        metadatas: Optional[list[dict]] = None,
-        ids: Optional[list[str]] = None
-    ) -> None:
-        """
-        Ajoute des textes bruts.
-
-        Args:
-            texts: Liste de textes
-            metadatas: Métadonnées associées
-            ids: IDs optionnels
-        """
-        # Convertir en format documents
+        if not chunks:
+            print("⚠️ Aucun chunk à ajouter")
+            return
+        
+        print(f"\n📤 Indexation de {len(chunks)} chunks...")
+        
+        # Préparer les données
         documents = []
-        for i, text in enumerate(texts):
-            doc = {"text": text}
-            # Ajouter des métadonnées (ou mettre un dict vide avec une clé par défaut)
-            if metadatas and i < len(metadatas) and metadatas[i]:
-                doc["metadata"] = metadatas[i]
-            else:
-                # ChromaDB nécessite des métadonnées non vides
-                doc["metadata"] = {"type": "text"}
-            documents.append(doc)
-
-        self.add_documents(documents, ids)
-
+        metadatas = []
+        ids = []
+        
+        for i, chunk in enumerate(chunks):
+            documents.append(chunk["content"])
+            
+            # ChromaDB nécessite metadata en dict simple (pas de nested)
+            metadata = {
+                "source": chunk["metadata"].get("source", "unknown"),
+                "title": chunk["metadata"].get("title", "unknown"),
+                "section": chunk["metadata"].get("section", "unknown"),
+                "chunk_id": chunk["metadata"].get("chunk_id", f"chunk_{i}")
+            }
+            metadatas.append(metadata)
+            ids.append(f"doc_{i}")
+        
+        # Générer embeddings
+        print("🧮 Génération des embeddings...")
+        embeddings = self.embedding_model.encode(
+            documents,
+            show_progress_bar=True,
+            convert_to_numpy=True
+        ).tolist()
+        
+        # Ajouter à ChromaDB
+        print("💾 Ajout à ChromaDB...")
+        self.collection.add(
+            embeddings=embeddings,
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )
+        
+        print(f"✅ {len(chunks)} chunks indexés")
+        print(f"📊 Total collection : {self.collection.count()} documents")
+    
     def search(
-        self,
-        query: str,
-        top_k: int = 5,
-        filter_metadata: Optional[dict] = None
-    ) -> list[dict]:
+        self, 
+        query: str, 
+        n_results: int = 5,
+        filter_metadata: Optional[Dict] = None
+    ) -> List[Dict]:
         """
-        Recherche les documents similaires.
-
+        Recherche sémantique dans la base.
+        
         Args:
-            query: Requête de recherche
-            top_k: Nombre de résultats
-            filter_metadata: Filtre sur les métadonnées
-
+            query: Question ou texte de recherche
+            n_results: Nombre de résultats à retourner
+            filter_metadata: Filtres optionnels (ex: {"title": "..."})
+            
         Returns:
-            Liste de {"text": ..., "metadata": ..., "score": ...}
+            Liste de résultats avec scores
         """
-        # 1. Générer l'embedding de la requête
-        query_embedding = self.embedding_provider.embed_text(query)
-
-        # 2. Chercher dans ChromaDB
+        # Générer embedding de la query
+        query_embedding = self.embedding_model.encode(
+            [query],
+            convert_to_numpy=True
+        ).tolist()[0]
+        
+        # Rechercher
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
-            where=filter_metadata  # Filtre optionnel
+            n_results=n_results,
+            where=filter_metadata
         )
-
-        # 3. Formater les résultats
-        documents = []
-        if results["ids"] and len(results["ids"][0]) > 0:
-            for i in range(len(results["ids"][0])):
-                documents.append({
-                    "id": results["ids"][0][i],
-                    "text": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                    "score": results["distances"][0][i]  # Score de similarité
-                })
-
-        return documents
-
-    def search_with_scores(
-        self,
-        query: str,
-        top_k: int = 5
-    ) -> list[tuple[dict, float]]:
-        """Recherche avec scores de similarité."""
-        results = self.search(query, top_k)
-        return [(doc, doc["score"]) for doc in results]
-
-    def delete_collection(self) -> None:
-        """Supprime la collection."""
+        
+        # Formater résultats
+        formatted_results = []
+        for i in range(len(results['documents'][0])):
+            formatted_results.append({
+                "content": results['documents'][0][i],
+                "metadata": results['metadatas'][0][i],
+                "distance": results['distances'][0][i],
+                "id": results['ids'][0][i]
+            })
+        
+        return formatted_results
+    
+    def clear_collection(self) -> None:
+        """Vide complètement la collection."""
+        print(f"🗑️ Suppression collection '{self.collection_name}'...")
         self.client.delete_collection(name=self.collection_name)
-
-    def get_collection_stats(self) -> dict:
-        """
-        Retourne les statistiques de la collection.
-
-        Returns:
-            {"count": int, "name": str, ...}
-        """
+        self.collection = self._get_or_create_collection()
+        print("✅ Collection réinitialisée")
+    
+    def get_stats(self) -> Dict:
+        """Retourne des statistiques sur la collection."""
+        count = self.collection.count()
+        
         return {
-            "count": self.collection.count(),
-            "name": self.collection_name,
-            "persist_path": self.persist_path
+            "total_documents": count,
+            "collection_name": self.collection_name,
+            "persist_directory": str(self.persist_directory)
         }
 
-    def update_document(self, doc_id: str, new_text: str, new_metadata: dict) -> None:
-        """Met à jour un document."""
-        # Générer le nouvel embedding
-        new_embedding = self.embedding_provider.embed_text(new_text)
 
-        # Mettre à jour dans ChromaDB
-        self.collection.update(
-            ids=[doc_id],
-            documents=[new_text],
-            embeddings=[new_embedding],
-            metadatas=[new_metadata]
+class RAGRetriever:
+    """Retriever pour récupérer contexte pertinent."""
+    
+    def __init__(self, vector_store: VectorStore):
+        """
+        Args:
+            vector_store: Instance de VectorStore
+        """
+        self.vector_store = vector_store
+    
+    def retrieve_context(
+        self, 
+        query: str, 
+        top_k: int = 3,
+        filter_by_document: Optional[str] = None
+    ) -> str:
+        """
+        Récupère le contexte pertinent pour une query.
+        
+        Args:
+            query: Question de l'utilisateur
+            top_k: Nombre de chunks à récupérer
+            filter_by_document: Filtrer par document spécifique
+            
+        Returns:
+            Contexte formaté prêt pour le LLM
+        """
+        # Filtres optionnels
+        where_filter = None
+        if filter_by_document:
+            where_filter = {"title": filter_by_document}
+        
+        # Rechercher
+        results = self.vector_store.search(
+            query=query,
+            n_results=top_k,
+            filter_metadata=where_filter
         )
+        
+        if not results:
+            return "Aucun contexte trouvé."
+        
+        # Formater contexte
+        context_parts = []
+        for i, result in enumerate(results, 1):
+            source = result['metadata'].get('title', 'Document')
+            section = result['metadata'].get('section', '')
+            content = result['content']
+            
+            context_parts.append(
+                f"[Source {i}: {source} - {section}]\n{content}\n"
+            )
+        
+        return "\n---\n".join(context_parts)
+    
+    def retrieve_with_scores(
+        self, 
+        query: str, 
+        top_k: int = 5
+    ) -> List[Dict]:
+        """
+        Récupère contexte avec scores de pertinence.
+        
+        Returns:
+            Liste de {content, metadata, score}
+        """
+        results = self.vector_store.search(query, n_results=top_k)
+        
+        # Convertir distance en score (plus proche = meilleur)
+        for result in results:
+            # Distance L2 : plus petit = meilleur
+            # Convertir en score 0-1 (1 = parfait)
+            result['relevance_score'] = 1 / (1 + result['distance'])
+        
+        return results
 
-    def delete_document(self, doc_id: str) -> None:
-        """Supprime un document."""
-        self.collection.delete(ids=[doc_id])
 
-    def persist(self) -> None:
-        """Force la persistance (si pas automatique)."""
-        # ChromaDB PersistentClient persiste automatiquement
-        # Cette méthode existe pour compatibilité avec d'autres backends
-        pass
+def build_vector_store(
+    documents_dir: str = "data/rag_document",
+    persist_dir: str = "data/vector_db",
+    force_rebuild: bool = False
+) -> VectorStore:
+    """
+    Construit la vector store complète.
+    
+    Args:
+        documents_dir: Dossier des documents markdown
+        persist_dir: Dossier de persistance ChromaDB
+        force_rebuild: Si True, reconstruit même si existe
+        
+    Returns:
+        VectorStore initialisée
+    """
+    
+    
+    vector_store = VectorStore(persist_directory=persist_dir)
+    
+    # Si déjà des documents et pas force_rebuild, ne rien faire
+    if vector_store.collection.count() > 0 and not force_rebuild:
+        print("✅ Vector store déjà initialisée")
+        stats = vector_store.get_stats()
+        print(f"📊 {stats['total_documents']} documents indexés")
+        return vector_store
+    
+    # Sinon, charger et indexer
+    if force_rebuild:
+        vector_store.clear_collection()
+    
+    print("\n📚 Chargement des documents...")
+    loader = DocumentLoader(documents_dir)
+    chunks = loader.load_and_chunk_all(chunk_size=800, overlap=150)
+    
+    print("\n🗄️ Indexation dans ChromaDB...")
+    vector_store.add_documents(chunks)
+    
+    print("\n✅ Vector store prête !")
+    return vector_store
+
+
+if __name__ == "__main__":
+    # Test complet
+    print("="*70)
+    print("TEST VECTOR STORE")
+    print("="*70)
+    
+    # Construire vector store
+    vector_store = build_vector_store(
+        documents_dir="data/rag_document",
+        force_rebuild=True  
+    )
+    
+    # Test recherche
+    print("\n" + "="*70)
+    print("TEST RECHERCHE")
+    print("="*70)
+    
+    retriever = RAGRetriever(vector_store)
+    
+    queries = [
+        "Quelles questions poser pour une douleur thoracique ?",
+        "Quels sont les critères pour le niveau ROUGE ?",
+        "Que faire en cas d'infarctus ?"
+    ]
+    
+    for query in queries:
+        print(f"\n🔍 Query: {query}")
+        print("-" * 70)
+        
+        context = retriever.retrieve_context(query, top_k=2)
+        print(context[:500] + "...\n")  
