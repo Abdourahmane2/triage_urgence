@@ -1,10 +1,8 @@
 # Système de Triage Intelligent des Urgences
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg) ![Python](https://img.shields.io/badge/python-3.9+-green.svg) ![License](https://img.shields.io/badge/license-MIT-orange.svg) ![Status](https://img.shields.io/badge/status-production-success.svg)
 
 **Un système d'aide à la décision médicale combinant Intelligence Artificielle et Machine Learning pour optimiser le triage des patients aux urgences**
 
-[Démarrage Rapide](#démarrage-rapide) • [Architecture](#architecture) • [Documentation](#documentation) • [Démo](#démo)
 
 ---
 
