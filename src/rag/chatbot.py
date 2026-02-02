@@ -1,23 +1,29 @@
-import re
+"""
+Chatbot LLM Professionnel pour Triage Médical
+"""
+
+import json
 import time
 import os
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, List
 from mistralai import Mistral
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
-class TriageChatbotAPI:
-    """Chatbot ultra robuste pour TOUS les utilisateurs."""
+class TriageChatbotLLM:
+    """Chatbot professionnel piloté par LLM."""
 
     def __init__(self, api_key: str = None, retriever=None):
         self.api_key = api_key or os.getenv("MISTRAL_API_KEY")
         self.retriever = retriever
         
-        if self.api_key:
-            self.client = Mistral(api_key=self.api_key)
-            print("✅ Mistral API activée")
+        if not self.api_key:
+            raise ValueError("MISTRAL_API_KEY manquante")
+        
+        self.client = Mistral(api_key=self.api_key)
+        print("✅ Mistral API activée")
         
         self.reset()
 
@@ -28,561 +34,446 @@ class TriageChatbotAPI:
             "age": None,
             "sex": None,
             "symptoms": [],
+            "symptom_duration": None,
+            "antecedents": [],
+            "allergies": [],
             "vitals": {},
             "messages": [],
         }
-        self.attempts = {}  # Compte tentatives par étape
-        self.current_step = "identity"
+        self.conversation_history = []
+        self.collected_identity = False
+        self.collected_symptoms = False
+        self.collected_antecedents = False
 
     def start(self) -> str:
-        """Message de bienvenue."""
-        return """Bonjour ! Je suis l'assistant de triage. 👋
+        """Message de bienvenue professionnel."""
+        return """**Assistant de Triage Médical**
 
-Je vais vous poser quelques questions simples.
+Bonjour, je vais collecter les informations du patient.
 
-**Pour commencer, dites-moi :**
-• Votre prénom
-• Votre âge  
-• Si vous êtes un homme ou une femme
+**Pour commencer, donnez-moi :**
+• Prénom et nom
+• Âge
+• Sexe (H/F)
 
-**Exemple :** Marie, 35 ans, femme"""
+Ex: Marie Dubois, 45 ans, femme"""
 
     def chat(self, user_message: str) -> str:
         """
-        Traite le message utilisateur.
+        Traite le message de l'infirmier.
         
-        ULTRA ROBUSTE :
-        - Gère les réponses partielles
-        - Aide si l'utilisateur ne sait pas
-        - Accepte toutes les formes
-        - Patient et pédagogique
+        Flow:
+        1. Identité (prénom, âge, sexe)
+        2. Symptômes (principal + autres)
+        3. Antécédents médicaux
+        4. Constantes vitales (5)
         """
         start_time = time.time()
         
-        # Ajouter message user
+        # Ajouter à l'historique
+        self.conversation_history.append({"role": "user", "content": user_message})
         self.data["messages"].append({"role": "user", "content": user_message})
         
-        # ========== EXTRACTION AGRESSIVE ==========
-        self._extract_everything(user_message)
+        # Extraire les données avec LLM + TRACKING
+        self._extract_with_llm(user_message)
         
-        # ========== PROCHAINE ÉTAPE ==========
-        next_step = self._smart_next_step()
+        # Déterminer prochaine étape
+        next_step = self._get_next_step()
         
-        # ========== GÉNÉRATION RÉPONSE ==========
+        # Générer question suivante avec LLM + TRACKING
         if next_step == "done":
-            response = """✅ **Parfait ! J'ai toutes les informations.**
-
-Vous pouvez maintenant cliquer sur le bouton **"🎯 Prédire la gravité"** dans le panneau latéral."""
+            response = "✅ **Collecte terminée**\n\nVous pouvez maintenant cliquer sur **'Prédire'** pour l'analyse ML."
         else:
-            response = self._smart_question(next_step, user_message)
+            response = self._generate_next_question_llm(next_step, user_message)
         
-        # Ajouter message bot
+        # Ajouter à l'historique
+        self.conversation_history.append({"role": "assistant", "content": response})
         self.data["messages"].append({"role": "assistant", "content": response})
         
-        # Track
+        # Track latence totale
         self._track_latency(time.time() - start_time)
-        
-        # Update step
-        self.current_step = next_step
         
         return response
 
-    def _extract_everything(self, msg: str):
+    def _extract_with_llm(self, user_message: str):
         """
-        Extraction ULTRA AGRESSIVE.
-        
-        Cherche PARTOUT dans le message.
+        Extrait les données du message avec le LLM + TRACKING API.
         """
-        msg_clean = msg.strip()
-        msg_lower = msg_clean.lower()
+        # Construire le contexte de conversation
+        conversation_text = "\n".join([
+            f"{'Infirmier' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+            for m in self.conversation_history[-6:]
+        ])
         
-        # ========== IDENTITÉ ==========
-        
-        # Prénom (cherche un mot avec majuscule ou premier mot)
-        if not self.data["name"]:
-            # Essaie d'extraire prénom de plusieurs façons
-            prenom = self._extract_prenom(msg_clean)
-            if prenom:
-                self.data["name"] = prenom
-                print(f"✅ Prénom : {prenom}")
-        
-        # Âge
-        if not self.data["age"]:
-            age = self._extract_age(msg_lower)
-            if age:
-                self.data["age"] = age
-                print(f"✅ Âge : {age}")
-        
-        # Sexe
-        if not self.data["sex"]:
-            sexe = self._extract_sexe(msg_lower)
-            if sexe:
-                self.data["sex"] = sexe
-                print(f"✅ Sexe : {sexe}")
-        
-        # ========== SYMPTÔMES ==========
-        if not self.data["symptoms"]:
-            symptoms = self._extract_symptoms(msg_lower)
-            if symptoms:
-                self.data["symptoms"] = symptoms
-                print(f"✅ Symptômes : {symptoms}")
-        
-        # ========== CONSTANTES ==========
-        
-        # Température
-        if "Temperature" not in self.data["vitals"]:
-            temp = self._extract_temperature(msg_lower)
-            if temp:
-                self.data["vitals"]["Temperature"] = temp
-                print(f"✅ Température : {temp}°C")
-        
-        # FC
-        if "FC" not in self.data["vitals"]:
-            fc = self._extract_fc(msg_lower)
-            if fc:
-                self.data["vitals"]["FC"] = fc
-                print(f"✅ FC : {fc} bpm")
-        
-        # TA
-        if "TA_systolique" not in self.data["vitals"]:
-            ta = self._extract_ta(msg_lower)
-            if ta:
-                self.data["vitals"]["TA_systolique"] = ta[0]
-                self.data["vitals"]["TA_diastolique"] = ta[1]
-                print(f"✅ TA : {ta[0]}/{ta[1]}")
-        
-        # SpO2
-        if "SpO2" not in self.data["vitals"]:
-            spo2 = self._extract_spo2(msg_lower)
-            if spo2:
-                self.data["vitals"]["SpO2"] = spo2
-                print(f"✅ SpO2 : {spo2}%")
-        
-        # FR
-        if "FR" not in self.data["vitals"]:
-            fr = self._extract_fr(msg_lower)
-            if fr:
-                self.data["vitals"]["FR"] = fr
-                print(f"✅ FR : {fr}/min")
+        prompt = f"""Tu es un système d'extraction pour triage médical.
 
-    # ========== EXTRACTEURS INTELLIGENTS ==========
-    
-    def _extract_prenom(self, msg: str) -> Optional[str]:
-        """
-        Extrait prénom intelligemment.
-        
-        Cherche :
-        1. Mot avec majuscule au début
-        2. Premier mot si pas de majuscule
-        3. Entre virgules
-        """
-        # Enlever ponctuation de fin
-        msg = msg.strip('.,;!?')
-        
-        # Cherche mot avec majuscule
-        match = re.search(r'\b([A-ZÀ-Ÿ][a-zà-ÿ]{1,15})\b', msg)
-        if match:
-            return match.group(1)
-        
-        # Sinon premier mot (capitalize)
-        words = msg.split()
-        if words:
-            first_word = words[0].strip(',;.')
-            if len(first_word) >= 2 and first_word.isalpha():
-                return first_word.capitalize()
-        
-        return None
+CONVERSATION:
+{conversation_text}
 
-    def _extract_age(self, msg: str) -> Optional[int]:
-        """Extrait âge."""
-        # Cherche nombre + "ans" ou juste nombre entre 0 et 120
-        match = re.search(r'(\d{1,3})\s*ans?', msg)
-        if match:
-            age = int(match.group(1))
-            if 0 <= age <= 120:
-                return age
-        
-        # Cherche juste un nombre
-        numbers = re.findall(r'\b(\d{1,3})\b', msg)
-        for num_str in numbers:
-            num = int(num_str)
-            if 0 < num <= 120:
-                return num
-        
-        return None
+EXTRAIT LES INFORMATIONS (mets null si NON mentionné):
 
-    def _extract_sexe(self, msg: str) -> Optional[str]:
-        """Extrait sexe."""
-        # Homme
-        if any(w in msg for w in ['homme', 'masculin', 'h', 'male', 'garçon', 'monsieur', 'mâle', 'gars']):
-            return "H"
-        
-        # Femme
-        if any(w in msg for w in ['femme', 'féminin', 'f', 'female', 'fille', 'madame', 'femelle', 'meuf']):
-            return "F"
-        
-        return None
+**IDENTITÉ:**
+- Prénom: texte ou null
+- Nom: texte ou null
+- Âge: nombre (0-120) ou null
+- Sexe: "H" ou "F" ou null
 
-    def _extract_symptoms(self, msg: str) -> Optional[List[str]]:
-        """
-        Extrait symptômes de manière TRÈS LARGE.
-        
-        Accepte plein de variantes.
-        """
-        symptoms = []
-        
-        symptoms_map = {
-            # Douleurs
-            'mal': 'Douleur',
-            'douleur': 'Douleur',
-            'souffr': 'Douleur',
-            'ça fait mal': 'Douleur',
+**SYMPTÔMES:**
+- Symptômes: liste des symptômes (utilise le langage du patient)
+- Durée: "depuis X heures/jours" ou null
+- Localisation: où se situe la douleur ou null
+
+**ANTÉCÉDENTS:**
+- Antécédents médicaux: liste (diabète, hypertension, etc.)
+- Allergies: liste ou []
+- Traitements en cours: liste ou []
+
+**CONSTANTES VITALES** (UNIQUEMENT si CLAIREMENT mentionnées avec contexte):
+- Température: nombre (35-42) ou null - SI "température", "temp", "fièvre" mentionné
+- FC: nombre (30-250) ou null - SI "fréquence cardiaque", "pouls", "FC", "battements" mentionné
+- TA_systolique: nombre (50-250) ou null - SI format X/Y ou "tension" mentionné
+- TA_diastolique: nombre (30-150) ou null
+- SpO2: nombre (50-100) ou null - SI "SpO2", "saturation", "oxygène" mentionné
+- FR: nombre (5-60) ou null - SI "fréquence respiratoire", "respiration", "FR" mentionné
+
+**RÈGLES STRICTES:**
+- Extrais UNIQUEMENT ce qui est dit explicitement
+- Pour constantes: DOIT avoir contexte médical clair
+- Ne confonds PAS âge avec température/FC
+- Si "35 ans" → âge=35, température=null
+- Si "température 35" → température=35
+
+RÉPONDS EN JSON SEULEMENT:
+
+{{
+  "identity": {{
+    "prenom": null,
+    "nom": null,
+    "age": null,
+    "sex": null
+  }},
+  "symptoms": {{
+    "list": [],
+    "duration": null,
+    "location": null
+  }},
+  "antecedents": {{
+    "medical": [],
+    "allergies": [],
+    "treatments": []
+  }},
+  "vitals": {{
+    "Temperature": null,
+    "FC": null,
+    "TA_systolique": null,
+    "TA_diastolique": null,
+    "SpO2": null,
+    "FR": null
+  }}
+}}"""
+
+        try:
+            # APPEL API AVEC TRACKING
+            api_start = time.time()
             
-            # Localisations spécifiques
-            'dent': 'Douleur dentaire',
-            'tête': 'Céphalées',
-            'crâne': 'Céphalées',
-            'migraine': 'Céphalées',
-            'ventre': 'Douleur abdominale',
-            'abdomen': 'Douleur abdominale',
-            'estomac': 'Douleur abdominale',
-            'poitrine': 'Douleur thoracique',
-            'thorax': 'Douleur thoracique',
-            'cœur': 'Douleur thoracique',
-            'dos': 'Douleur dorsale',
-            'jambe': 'Douleur membre',
-            'bras': 'Douleur membre',
+            response = self.client.chat.complete(
+                model="mistral-large-latest",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=500
+            )
             
-            # Autres symptômes
-            'fièvre': 'Fièvre',
-            'chaud': 'Fièvre',
-            'température': 'Fièvre',
-            'toux': 'Toux',
-            'nausée': 'Nausées',
-            'vomi': 'Vomissements',
-            'diarrhée': 'Diarrhée',
-            'fatigue': 'Fatigue',
-            'faible': 'Fatigue',
-            'vertige': 'Vertiges',
-            'tourner': 'Vertiges',
-            'essouffl': 'Dyspnée',
-            'respir': 'Dyspnée',
-            'souffle': 'Dyspnée',
-        }
-        
-        for keyword, symptom in symptoms_map.items():
-            if keyword in msg:
-                if symptom not in symptoms:
-                    symptoms.append(symptom)
-        
-        return symptoms if symptoms else None
-
-    def _extract_temperature(self, msg: str) -> Optional[float]:
-        """Extrait température (35-42°C)."""
-        # Cherche nombres avec virgule ou point
-        numbers = re.findall(r'\d+[,\.]?\d*', msg)
-        for num_str in numbers:
-            try:
-                num = float(num_str.replace(',', '.'))
-                if 35.0 <= num <= 42.0:
-                    return round(num, 1)
-            except:
-                pass
-        return None
-
-    def _extract_fc(self, msg: str) -> Optional[int]:
-        """Extrait FC (30-250 bpm)."""
-        numbers = re.findall(r'\d+', msg)
-        for num_str in numbers:
-            num = int(num_str)
-            if 30 <= num <= 250:
-                return num
-        return None
-
-    def _extract_ta(self, msg: str) -> Optional[Tuple[int, int]]:
-        """Extrait TA."""
-        # Format X/Y
-        match = re.search(r'(\d{2,3})\s*/\s*(\d{2,3})', msg)
-        if match:
-            sys = int(match.group(1))
-            dia = int(match.group(2))
+            api_duration = time.time() - api_start
             
-            # Format court
-            if sys < 50:
-                sys *= 10
-            if dia < 30:
-                dia *= 10
+            # TRACKING API
+            self._track_api_call(
+                model="mistral-large-latest",
+                tokens_input=len(prompt.split()) * 1.3,  # Approximation
+                tokens_output=len(response.choices[0].message.content.split()) * 1.3,
+                duration=api_duration
+            )
             
-            if 50 <= sys <= 250 and 30 <= dia <= 150:
-                return (sys, dia)
+            llm_response = response.choices[0].message.content
+            
+            # Parser JSON
+            data = self._parse_json(llm_response)
+            
+            # Mettre à jour IDENTITÉ
+            identity = data.get("identity", {})
+            if identity.get("prenom") and not self.data["name"]:
+                nom_complet = identity.get("prenom", "")
+                if identity.get("nom"):
+                    nom_complet += " " + identity["nom"]
+                self.data["name"] = nom_complet
+                print(f"✅ Nom: {nom_complet}")
+            
+            if identity.get("age"):
+                self.data["age"] = identity["age"]
+                print(f"✅ Âge: {identity['age']}")
+            
+            if identity.get("sex"):
+                self.data["sex"] = identity["sex"]
+                print(f"✅ Sexe: {identity['sex']}")
+            
+            # Mettre à jour SYMPTÔMES
+            symptoms_data = data.get("symptoms", {})
+            if symptoms_data.get("list"):
+                for s in symptoms_data["list"]:
+                    if s and s not in self.data["symptoms"]:
+                        self.data["symptoms"].append(s)
+                        print(f"✅ Symptôme: {s}")
+            
+            if symptoms_data.get("duration"):
+                self.data["symptom_duration"] = symptoms_data["duration"]
+            
+            # Mettre à jour ANTÉCÉDENTS
+            antecedents_data = data.get("antecedents", {})
+            if antecedents_data.get("medical"):
+                for a in antecedents_data["medical"]:
+                    if a and a not in self.data["antecedents"]:
+                        self.data["antecedents"].append(a)
+                        print(f"✅ Antécédent: {a}")
+            
+            if antecedents_data.get("allergies"):
+                for a in antecedents_data["allergies"]:
+                    if a and a not in self.data["allergies"]:
+                        self.data["allergies"].append(a)
+            
+            # Mettre à jour CONSTANTES
+            vitals = data.get("vitals", {})
+            for key, value in vitals.items():
+                if value is not None and key not in self.data["vitals"]:
+                    self.data["vitals"][key] = value
+                    print(f"✅ {key}: {value}")
+            
+            # Marquer étapes complétées
+            if self.data["name"] and self.data["age"] and self.data["sex"]:
+                self.collected_identity = True
+            
+            if len(self.data["symptoms"]) > 0:
+                self.collected_symptoms = True
         
-        # Juste un nombre
-        numbers = re.findall(r'\d+', msg)
-        for num_str in numbers:
-            sys = int(num_str)
-            if 50 <= sys <= 250:
-                dia = int(sys * 0.67)
-                return (sys, dia)
-        
-        return None
+        except Exception as e:
+            print(f"⚠️ Extraction LLM erreur: {e}")
 
-    def _extract_spo2(self, msg: str) -> Optional[int]:
-        """Extrait SpO2 (50-100%)."""
-        numbers = re.findall(r'\d+', msg)
-        for num_str in numbers:
-            num = int(num_str)
-            if 50 <= num <= 100:
-                return num
-        return None
-
-    def _extract_fr(self, msg: str) -> Optional[int]:
-        """Extrait FR (5-60/min)."""
-        numbers = re.findall(r'\d+', msg)
-        for num_str in numbers:
-            num = int(num_str)
-            if 5 <= num <= 60:
-                return num
-        return None
-
-    def _smart_next_step(self) -> str:
+    def _generate_next_question_llm(self, step: str, last_message: str) -> str:
         """
-        Détermine prochaine étape INTELLIGEMMENT.
-        
-        Vérifie ce qui manque vraiment.
+        Génère la prochaine question avec le LLM + TRACKING.
         """
-        # Identité complète ?
-        if not self.data.get("name") or not self.data.get("age") or not self.data.get("sex"):
+        # Contexte actuel
+        identity_status = f"Prénom: {self.data.get('name') or 'Non'}, Âge: {self.data.get('age') or 'Non'}, Sexe: {self.data.get('sex') or 'Non'}"
+        symptoms_status = f"{len(self.data['symptoms'])} symptôme(s): {', '.join(self.data['symptoms']) if self.data['symptoms'] else 'Aucun'}"
+        antecedents_status = f"{len(self.data['antecedents'])} antécédent(s)"
+        
+        vitals_collected = [k for k in ["Temperature", "FC", "TA_systolique", "SpO2", "FR"] if k in self.data["vitals"]]
+        vitals_missing = [k for k in ["Temperature", "FC", "TA_systolique", "SpO2", "FR"] if k not in self.data["vitals"]]
+        
+        prompt = f"""Tu es assistant de triage médical professionnel.
+
+**DONNÉES COLLECTÉES:**
+- Identité: {identity_status}
+- Symptômes: {symptoms_status}
+- Antécédents: {antecedents_status}
+- Constantes collectées: {', '.join(vitals_collected) if vitals_collected else 'Aucune'}
+- Constantes manquantes: {', '.join(vitals_missing)}
+
+**PROCHAINE ÉTAPE:** {step}
+
+**DERNIÈRE RÉPONSE:** {last_message}
+
+GÉNÈRE LA PROCHAINE QUESTION (professionnel mais concis):
+
+**RÈGLES:**
+1. Question claire et directe (2-3 lignes max)
+2. Toujours donner des exemples de réponses
+3. Ton professionnel mais pas robotique
+4. Format: Question + "Ex: réponse1 / réponse2"
+
+**SELON L'ÉTAPE:**
+
+Si step=identity:
+"Il me manque [info]. Pouvez-vous me donner [info] ?
+Ex: [exemple]"
+
+Si step=symptoms:
+"Quel est le symptôme principal du patient ?
+Ex: mal de tête / douleur thoracique / fièvre"
+
+Si step=more_symptoms:
+"D'autres symptômes associés ?
+Ex: oui (préciser) / non / aucun autre"
+
+Si step=symptom_duration:
+"Depuis combien de temps ?
+Ex: 2 heures / ce matin / depuis hier"
+
+Si step=antecedents:
+"Antécédents médicaux du patient ?
+Ex: diabète / hypertension / aucun / ne sait pas"
+
+Si step=temperature:
+"Température corporelle ?
+Ex: 37.5 / 38 / 39"
+
+Si step=fc:
+"Fréquence cardiaque (pouls) ?
+Ex: 80 / 90 / 100"
+
+Si step=ta:
+"Tension artérielle ?
+Ex: 120/80 / 140/90 / 110/70"
+
+Si step=spo2:
+"Saturation en oxygène (SpO2) ?
+Ex: 98 / 95 / 92"
+
+Si step=fr:
+"Fréquence respiratoire ?
+Ex: 16 / 20 / 25"
+
+RÉPONDS JUSTE LA QUESTION (concise):"""
+
+        try:
+            # APPEL API AVEC TRACKING
+            api_start = time.time()
+            
+            response = self.client.chat.complete(
+                model="mistral-large-latest",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=150
+            )
+            
+            api_duration = time.time() - api_start
+            
+            # TRACKING API
+            self._track_api_call(
+                model="mistral-large-latest",
+                tokens_input=len(prompt.split()) * 1.3,
+                tokens_output=len(response.choices[0].message.content.split()) * 1.3,
+                duration=api_duration
+            )
+            
+            question = response.choices[0].message.content.strip()
+            
+            # Nettoyer
+            question = question.replace("**", "").strip()
+            
+            return question
+        
+        except Exception as e:
+            print(f"⚠️ Génération question erreur: {e}")
+            return self._fallback_question(step)
+
+    def _get_next_step(self) -> str:
+        """Détermine la prochaine étape logique."""
+        
+        # 1. IDENTITÉ COMPLÈTE ?
+        if not self.data.get("name"):
+            return "identity"
+        if not self.data.get("age"):
+            return "identity"
+        if not self.data.get("sex"):
             return "identity"
         
-        # Symptômes ?
-        if not self.data.get("symptoms"):
+        # 2. SYMPTÔMES ?
+        if not self.data["symptoms"]:
             return "symptoms"
         
-        # Constantes (dans l'ordre)
-        v = self.data["vitals"]
+        # 3. DURÉE SYMPTÔMES ?
+        if not self.data.get("symptom_duration") and not self.collected_symptoms:
+            self.collected_symptoms = True  # Marquer comme collecté
+            return "symptom_duration"
         
-        if "Temperature" not in v:
+        # 4. AUTRES SYMPTÔMES ?
+        if len(self.data["symptoms"]) == 1 and not self.collected_symptoms:
+            self.collected_symptoms = True
+            return "more_symptoms"
+        
+        # 5. ANTÉCÉDENTS ?
+        if not self.collected_antecedents:
+            self.collected_antecedents = True
+            return "antecedents"
+        
+        # 6. CONSTANTES VITALES (dans l'ordre)
+        if "Temperature" not in self.data["vitals"]:
             return "temperature"
-        if "FC" not in v:
+        
+        if "FC" not in self.data["vitals"]:
             return "fc"
-        if "TA_systolique" not in v:
+        
+        if "TA_systolique" not in self.data["vitals"]:
             return "ta"
-        if "SpO2" not in v:
+        
+        if "SpO2" not in self.data["vitals"]:
             return "spo2"
-        if "FR" not in v:
+        
+        if "FR" not in self.data["vitals"]:
             return "fr"
         
         return "done"
 
-    def _smart_question(self, step: str, last_msg: str) -> str:
-        """
-        Génère question INTELLIGENTE.
+    def _fallback_question(self, step: str) -> str:
+        """Questions de secours."""
+        fallbacks = {
+            "identity": "Pouvez-vous me donner le prénom, l'âge et le sexe du patient ?\nEx: Marie, 45 ans, femme",
+            "symptoms": "Quel est le symptôme principal ?\nEx: mal de tête / douleur thoracique / fièvre",
+            "more_symptoms": "D'autres symptômes ?\nEx: oui (préciser) / non",
+            "symptom_duration": "Depuis combien de temps ?\nEx: 2 heures / ce matin / hier",
+            "antecedents": "Antécédents médicaux ?\nEx: diabète / hypertension / aucun",
+            "temperature": "Température ?\nEx: 37.5 / 38 / 39",
+            "fc": "Fréquence cardiaque ?\nEx: 80 / 90 / 100",
+            "ta": "Tension artérielle ?\nEx: 120/80 / 140/90",
+            "spo2": "SpO2 ?\nEx: 98 / 95 / 92",
+            "fr": "Fréquence respiratoire ?\nEx: 16 / 20 / 25"
+        }
         
-        ADAPTE selon :
-        - Si user a dit "je ne sais pas"
-        - Nombre de tentatives
-        - Contexte
-        """
-        # Incrémenter tentatives
-        if step not in self.attempts:
-            self.attempts[step] = 0
-        self.attempts[step] += 1
+        return fallbacks.get(step, "Information suivante ?")
+
+    def _parse_json(self, response: str) -> dict:
+        """Parse JSON de la réponse LLM."""
+        response = response.strip()
         
-        attempts = self.attempts[step]
+        # Enlever markdown
+        if response.startswith("```json"):
+            response = response[7:]
+        elif response.startswith("```"):
+            response = response[3:]
         
-        # User dit "je ne sais pas" ?
-        confused = any(w in last_msg.lower() for w in ['sais pas', 'sait pas', 'connais pas', 'aucune idée'])
+        if response.endswith("```"):
+            response = response[:-3]
         
-        name = self.data.get("name", "")
+        response = response.strip()
         
-        # ========== IDENTITÉ ==========
-        if step == "identity":
-            # Quelles infos manquent ?
-            missing = []
-            if not self.data.get("name"):
-                missing.append("prénom")
-            if not self.data.get("age"):
-                missing.append("âge")
-            if not self.data.get("sex"):
-                missing.append("sexe")
+        return json.loads(response)
+
+    def _track_api_call(self, model: str, tokens_input: float, tokens_output: float, duration: float):
+        """Track appel API pour monitoring."""
+        try:
+            from src.monitoring.metrics_tracker import get_tracker
             
-            if attempts == 1:
-                return f"""**Pour commencer, j'ai besoin de 3 informations simples :**
-
-• Votre **prénom**
-• Votre **âge**
-• Si vous êtes un **homme** ou une **femme**
-
-**Exemple :** Jean, 30 ans, homme"""
-            else:
-                missing_str = " et ".join(missing)
-                return f"""Il me manque encore : **{missing_str}**
-
-Pouvez-vous me donner cette information ?"""
-        
-        # ========== SYMPTÔMES ==========
-        elif step == "symptoms":
-            if attempts == 1:
-                return f"""Bonjour **{name}** ! 👋
-
-**Qu'est-ce qui vous amène aujourd'hui ?**
-
-Dites-moi votre symptôme principal (ce qui vous gêne le plus)."""
-            else:
-                return f"""**{name}**, j'ai besoin de savoir ce qui ne va pas.
-
-**Exemples :** 
-• "J'ai mal au ventre"
-• "J'ai de la fièvre"
-• "Je tousse"
-
-Qu'est-ce qui vous gêne ?"""
-        
-        # ========== TEMPÉRATURE ==========
-        elif step == "temperature":
-            if confused and attempts > 1:
-                return f"""**Pas de problème {name} !**
-
-On va mesurer votre température ensemble.
-
-**Si vous avez un thermomètre :**
-• Mettez-le sous la langue ou sous le bras
-• Attendez le bip
-• Dites-moi le chiffre
-
-**Si vous n'en avez pas :**
-• Tapez juste **"37"** (température normale)"""
-            elif attempts == 1:
-                return f"""**{name}**, quelle est votre **température** ?
-
-**Exemples acceptés :**
-• 37.5
-• 38
-• 39°C
-
-*(Si vous ne savez pas, dites-le moi)*"""
-            else:
-                return f"""**{name}**, j'ai vraiment besoin de la température.
-
-Tapez un chiffre entre **35 et 42**.
-
-**Si vous ne savez pas**, tapez juste **37** (température normale)."""
-        
-        # ========== FC ==========
-        elif step == "fc":
-            if confused and attempts > 1:
-                return f"""**Pas grave {name} !**
-
-**Pour mesurer votre pouls :**
-1. Posez 2 doigts sur votre poignet
-2. Comptez les battements pendant 15 secondes
-3. Multipliez par 4
-
-**Ou tapez 80** (valeur moyenne normale)"""
-            elif attempts == 1:
-                return f"""**{name}**, quelle est votre **fréquence cardiaque** (pouls) ?
-
-**Exemples :**
-• 80
-• 90 bpm
-
-*(Si vous ne savez pas, dites-le)*"""
-            else:
-                return f"""**{name}**, j'ai besoin du pouls.
-
-Tapez un chiffre entre **50 et 150**.
-
-**Si vous ne savez pas**, tapez **80** (valeur normale)."""
-        
-        # ========== TA ==========
-        elif step == "ta":
-            if confused and attempts > 1:
-                return f"""**Ce n'est pas grave {name} !**
-
-Si vous n'avez pas de tensiomètre, tapez :
-
-**120/80** (tension normale)"""
-            elif attempts == 1:
-                return f"""**{name}**, quelle est votre **tension artérielle** ?
-
-**Format :** 2 chiffres séparés par un /
-
-**Exemples :**
-• 120/80
-• 13/8
-• 14/9
-
-*(Si vous ne savez pas, dites-le)*"""
-            else:
-                return f"""**{name}**, j'ai besoin de la tension.
-
-**Format :** X/Y (exemple: 120/80)
-
-**Si vous ne savez pas**, tapez **120/80** (normale)."""
-        
-        # ========== SPO2 ==========
-        elif step == "spo2":
-            if confused and attempts > 1:
-                return f"""**Pas de souci {name} !**
-
-Si vous n'avez pas d'oxymètre, tapez :
-
-**98** (saturation normale)"""
-            elif attempts == 1:
-                return f"""**{name}**, quelle est votre **saturation en oxygène** (SpO2) ?
-
-**Exemples :**
-• 98
-• 95%
-
-*(Si vous ne savez pas, dites-le)*"""
-            else:
-                return f"""**{name}**, j'ai besoin du SpO2.
-
-Tapez un chiffre entre **90 et 100**.
-
-**Si vous ne savez pas**, tapez **98** (normale)."""
-        
-        # ========== FR ==========
-        elif step == "fr":
-            if confused and attempts > 1:
-                return f"""**Ce n'est pas grave {name} !**
-
-**Pour compter :**
-• Respirez normalement
-• Comptez combien de fois vous respirez en 1 minute
-
-**Ou tapez 16** (respiration normale)"""
-            elif attempts == 1:
-                return f"""**{name}**, quelle est votre **fréquence respiratoire** ?
-
-**Combien de fois respirez-vous par minute ?**
-
-**Exemples :**
-• 16
-• 18/min
-
-*(Si vous ne savez pas, dites-le)*"""
-            else:
-                return f"""**{name}**, dernière info !
-
-Tapez un chiffre entre **12 et 25**.
-
-**Si vous ne savez pas**, tapez **16** (normale)."""
-        
-        return "Une question ?"
+            tracker = get_tracker()
+            tracker.track_api_call(
+                service="mistral",
+                model=model,
+                tokens_input=int(tokens_input),
+                tokens_output=int(tokens_output),
+                latency=duration
+            )
+        except Exception as e:
+            print(f"⚠️ Tracking API erreur: {e}")
 
     def _track_latency(self, duration: float):
         """Track latence."""
         try:
-            from ..monitoring.metrics_tracker import get_tracker
+            from src.monitoring.metrics_tracker import get_tracker
             tracker = get_tracker()
-            tracker.track_latency("Chatbot", "message", duration)
+            tracker.track_latency("ChatbotLLM", "message", duration)
         except:
             pass
 
     def is_ready_for_prediction(self) -> bool:
-        """Vérifie si prêt."""
+        """Vérifie si toutes les constantes sont collectées."""
         required = ["Temperature", "FC", "TA_systolique", "SpO2", "FR"]
         return all(k in self.data["vitals"] for k in required)
 

@@ -106,7 +106,7 @@ class MetricsTracker:
                 "total_tokens_output": 0,
                 "avg_latency": 0,
                 "success_rate": 0,
-            }
+            } 
 
         total_calls = len(self.api_calls)
         total_tokens_input = sum(c["tokens_input"] for c in self.api_calls)

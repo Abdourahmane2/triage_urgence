@@ -8,7 +8,6 @@ import json
 from typing import Optional
 
 # from ..agents.triage_agent import PatientSimulator
-from ..metrics.metrics_aggregator import MetricsAggregator
 from ..models.patient import Patient
 from ..models.conversation import ConversationHistory, MessageRole
 from ..models.triage import TriageResult

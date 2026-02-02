@@ -18,7 +18,7 @@ class SimulationWorkflow:
 
     def __init__(self, llm_provider: BaseLLMProvider, max_turns: int = 10):
         self.llm = llm_provider
-        self.max_turns = max(max_turns, 8)  # Minimum 8 questions
+        self.max_turns = max(max_turns, 20)  
         self.patient_generator = PatientGenerator(llm_provider)
         self.analyzer = ConversationAnalyzer(llm_provider)
         self.conversation = None
@@ -60,10 +60,9 @@ class SimulationWorkflow:
         basic_info_collected = {"age": False, "sexe": False}
 
         while turn < self.max_turns:
-            # Analyser ce qu'on a déjà
             self.extracted_patient = self.analyzer.extract_patient_info(self.conversation)
 
-            # ⭐ LOGIQUE DE QUESTIONS AMÉLIORÉE
+        
             question = None
 
             # Vérifier si on a âge/sexe (demander UNE SEULE FOIS si manquant)
@@ -103,7 +102,7 @@ class SimulationWorkflow:
             # Arrêt si on a assez d'infos critiques
             if turn >= 6:  # Minimum 6 questions
                 completeness = self.analyzer.get_completeness_score(self.extracted_patient)
-                if completeness["score"] > 0.7:  # 70% d'infos
+                if completeness["score"] > 0.7: 
                     print("✅ Informations suffisantes collectées.")
                     break
 
