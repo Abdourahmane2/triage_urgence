@@ -582,7 +582,7 @@ Un grand merci à :
 
 ** Si ce projet vous a aidé, donnez-lui une étoile ! **
 
-**Made with  and  in France 🇫🇷**
+
 
 ---
 
