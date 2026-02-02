@@ -1,8 +1,3 @@
-"""
-Page d'accueil - Application de triage des urgences.
-Design moderne et professionnel - VERSION CORRIGÉE
-"""
-
 import streamlit as st
 
 # Configuration de la page

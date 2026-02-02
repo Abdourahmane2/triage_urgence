@@ -18,7 +18,7 @@ from src.workflows.simulation_workflow import SimulationWorkflow
 st.set_page_config(page_title="Génération Pro", page_icon="🎲", layout="wide")
 
 # ============================================================================
-# CSS ULTRA MODERNE (identique à avant)
+# CSS ULTRA MODERNE 
 # ============================================================================
 st.markdown("""
 <style>

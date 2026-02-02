@@ -1,11 +1,7 @@
-"""
-Chatbot Final - Mistral API ROBUSTE avec Monitoring
-"""
-
 import re
 import time
 import os
-from typing import Dict
+from typing import Dict, Optional, Tuple, List
 from mistralai import Mistral
 from dotenv import load_dotenv
 
@@ -13,59 +9,358 @@ load_dotenv()
 
 
 class TriageChatbotAPI:
-    """Chatbot Mistral API robuste avec tracking complet."""
+    """Chatbot ultra robuste pour TOUS les utilisateurs."""
 
     def __init__(self, api_key: str = None, retriever=None):
         self.api_key = api_key or os.getenv("MISTRAL_API_KEY")
-        self.retriever = retriever  # RAG retriever
+        self.retriever = retriever
+        
         if self.api_key:
             self.client = Mistral(api_key=self.api_key)
-            self.use_api = True
-
             print("✅ Mistral API activée")
-        else:
-            self.use_api = False
-            print("⚠️ Mode règles (sans API)")
-
+        
         self.reset()
 
+    def reset(self):
+        """Réinitialise le chatbot."""
+        self.data = {
+            "name": None,
+            "age": None,
+            "sex": None,
+            "symptoms": [],
+            "vitals": {},
+            "messages": [],
+        }
+        self.attempts = {}  # Compte tentatives par étape
+        self.current_step = "identity"
+
     def start(self) -> str:
-        return "Bonjour. Indiquez : prénom, âge, sexe\nExemple : Jean, 25 ans, homme"
+        """Message de bienvenue."""
+        return """Bonjour ! Je suis l'assistant de triage. 👋
 
-    def chat(self, msg: str) -> str:
-        """Chat principal avec tracking."""
-        start = time.time()
-        self.data["messages"].append({"role": "user", "content": msg})
+Je vais vous poser quelques questions simples.
 
-        # Extraire données
-        self._extract(msg)
+**Pour commencer, dites-moi :**
+• Votre prénom
+• Votre âge  
+• Si vous êtes un homme ou une femme
 
-        # Déterminer étape suivante
-        next_step = self._get_next_step()
+**Exemple :** Marie, 35 ans, femme"""
 
-        # Générer réponse
-        if self.use_api and self.data.get("age") and next_step != "identity":
-            response = self._ask_with_api(next_step)
+    def chat(self, user_message: str) -> str:
+        """
+        Traite le message utilisateur.
+        
+        ULTRA ROBUSTE :
+        - Gère les réponses partielles
+        - Aide si l'utilisateur ne sait pas
+        - Accepte toutes les formes
+        - Patient et pédagogique
+        """
+        start_time = time.time()
+        
+        # Ajouter message user
+        self.data["messages"].append({"role": "user", "content": user_message})
+        
+        # ========== EXTRACTION AGRESSIVE ==========
+        self._extract_everything(user_message)
+        
+        # ========== PROCHAINE ÉTAPE ==========
+        next_step = self._smart_next_step()
+        
+        # ========== GÉNÉRATION RÉPONSE ==========
+        if next_step == "done":
+            response = """✅ **Parfait ! J'ai toutes les informations.**
+
+Vous pouvez maintenant cliquer sur le bouton **"🎯 Prédire la gravité"** dans le panneau latéral."""
         else:
-            response = self._ask_with_rules(next_step)
-
+            response = self._smart_question(next_step, user_message)
+        
+        # Ajouter message bot
         self.data["messages"].append({"role": "assistant", "content": response})
-
-        # Track latence
-        self._track_latency(time.time() - start)
-
+        
+        # Track
+        self._track_latency(time.time() - start_time)
+        
+        # Update step
+        self.current_step = next_step
+        
         return response
 
-    def _get_next_step(self) -> str:
-        """Détermine prochaine étape unique."""
-        if not self.data.get("age") or not self.data.get("sex"):
-            return "identity"
+    def _extract_everything(self, msg: str):
+        """
+        Extraction ULTRA AGRESSIVE.
+        
+        Cherche PARTOUT dans le message.
+        """
+        msg_clean = msg.strip()
+        msg_lower = msg_clean.lower()
+        
+        # ========== IDENTITÉ ==========
+        
+        # Prénom (cherche un mot avec majuscule ou premier mot)
+        if not self.data["name"]:
+            # Essaie d'extraire prénom de plusieurs façons
+            prenom = self._extract_prenom(msg_clean)
+            if prenom:
+                self.data["name"] = prenom
+                print(f"✅ Prénom : {prenom}")
+        
+        # Âge
+        if not self.data["age"]:
+            age = self._extract_age(msg_lower)
+            if age:
+                self.data["age"] = age
+                print(f"✅ Âge : {age}")
+        
+        # Sexe
+        if not self.data["sex"]:
+            sexe = self._extract_sexe(msg_lower)
+            if sexe:
+                self.data["sex"] = sexe
+                print(f"✅ Sexe : {sexe}")
+        
+        # ========== SYMPTÔMES ==========
+        if not self.data["symptoms"]:
+            symptoms = self._extract_symptoms(msg_lower)
+            if symptoms:
+                self.data["symptoms"] = symptoms
+                print(f"✅ Symptômes : {symptoms}")
+        
+        # ========== CONSTANTES ==========
+        
+        # Température
+        if "Temperature" not in self.data["vitals"]:
+            temp = self._extract_temperature(msg_lower)
+            if temp:
+                self.data["vitals"]["Temperature"] = temp
+                print(f"✅ Température : {temp}°C")
+        
+        # FC
+        if "FC" not in self.data["vitals"]:
+            fc = self._extract_fc(msg_lower)
+            if fc:
+                self.data["vitals"]["FC"] = fc
+                print(f"✅ FC : {fc} bpm")
+        
+        # TA
+        if "TA_systolique" not in self.data["vitals"]:
+            ta = self._extract_ta(msg_lower)
+            if ta:
+                self.data["vitals"]["TA_systolique"] = ta[0]
+                self.data["vitals"]["TA_diastolique"] = ta[1]
+                print(f"✅ TA : {ta[0]}/{ta[1]}")
+        
+        # SpO2
+        if "SpO2" not in self.data["vitals"]:
+            spo2 = self._extract_spo2(msg_lower)
+            if spo2:
+                self.data["vitals"]["SpO2"] = spo2
+                print(f"✅ SpO2 : {spo2}%")
+        
+        # FR
+        if "FR" not in self.data["vitals"]:
+            fr = self._extract_fr(msg_lower)
+            if fr:
+                self.data["vitals"]["FR"] = fr
+                print(f"✅ FR : {fr}/min")
 
+    # ========== EXTRACTEURS INTELLIGENTS ==========
+    
+    def _extract_prenom(self, msg: str) -> Optional[str]:
+        """
+        Extrait prénom intelligemment.
+        
+        Cherche :
+        1. Mot avec majuscule au début
+        2. Premier mot si pas de majuscule
+        3. Entre virgules
+        """
+        # Enlever ponctuation de fin
+        msg = msg.strip('.,;!?')
+        
+        # Cherche mot avec majuscule
+        match = re.search(r'\b([A-ZÀ-Ÿ][a-zà-ÿ]{1,15})\b', msg)
+        if match:
+            return match.group(1)
+        
+        # Sinon premier mot (capitalize)
+        words = msg.split()
+        if words:
+            first_word = words[0].strip(',;.')
+            if len(first_word) >= 2 and first_word.isalpha():
+                return first_word.capitalize()
+        
+        return None
+
+    def _extract_age(self, msg: str) -> Optional[int]:
+        """Extrait âge."""
+        # Cherche nombre + "ans" ou juste nombre entre 0 et 120
+        match = re.search(r'(\d{1,3})\s*ans?', msg)
+        if match:
+            age = int(match.group(1))
+            if 0 <= age <= 120:
+                return age
+        
+        # Cherche juste un nombre
+        numbers = re.findall(r'\b(\d{1,3})\b', msg)
+        for num_str in numbers:
+            num = int(num_str)
+            if 0 < num <= 120:
+                return num
+        
+        return None
+
+    def _extract_sexe(self, msg: str) -> Optional[str]:
+        """Extrait sexe."""
+        # Homme
+        if any(w in msg for w in ['homme', 'masculin', 'h', 'male', 'garçon', 'monsieur', 'mâle', 'gars']):
+            return "H"
+        
+        # Femme
+        if any(w in msg for w in ['femme', 'féminin', 'f', 'female', 'fille', 'madame', 'femelle', 'meuf']):
+            return "F"
+        
+        return None
+
+    def _extract_symptoms(self, msg: str) -> Optional[List[str]]:
+        """
+        Extrait symptômes de manière TRÈS LARGE.
+        
+        Accepte plein de variantes.
+        """
+        symptoms = []
+        
+        symptoms_map = {
+            # Douleurs
+            'mal': 'Douleur',
+            'douleur': 'Douleur',
+            'souffr': 'Douleur',
+            'ça fait mal': 'Douleur',
+            
+            # Localisations spécifiques
+            'dent': 'Douleur dentaire',
+            'tête': 'Céphalées',
+            'crâne': 'Céphalées',
+            'migraine': 'Céphalées',
+            'ventre': 'Douleur abdominale',
+            'abdomen': 'Douleur abdominale',
+            'estomac': 'Douleur abdominale',
+            'poitrine': 'Douleur thoracique',
+            'thorax': 'Douleur thoracique',
+            'cœur': 'Douleur thoracique',
+            'dos': 'Douleur dorsale',
+            'jambe': 'Douleur membre',
+            'bras': 'Douleur membre',
+            
+            # Autres symptômes
+            'fièvre': 'Fièvre',
+            'chaud': 'Fièvre',
+            'température': 'Fièvre',
+            'toux': 'Toux',
+            'nausée': 'Nausées',
+            'vomi': 'Vomissements',
+            'diarrhée': 'Diarrhée',
+            'fatigue': 'Fatigue',
+            'faible': 'Fatigue',
+            'vertige': 'Vertiges',
+            'tourner': 'Vertiges',
+            'essouffl': 'Dyspnée',
+            'respir': 'Dyspnée',
+            'souffle': 'Dyspnée',
+        }
+        
+        for keyword, symptom in symptoms_map.items():
+            if keyword in msg:
+                if symptom not in symptoms:
+                    symptoms.append(symptom)
+        
+        return symptoms if symptoms else None
+
+    def _extract_temperature(self, msg: str) -> Optional[float]:
+        """Extrait température (35-42°C)."""
+        # Cherche nombres avec virgule ou point
+        numbers = re.findall(r'\d+[,\.]?\d*', msg)
+        for num_str in numbers:
+            try:
+                num = float(num_str.replace(',', '.'))
+                if 35.0 <= num <= 42.0:
+                    return round(num, 1)
+            except:
+                pass
+        return None
+
+    def _extract_fc(self, msg: str) -> Optional[int]:
+        """Extrait FC (30-250 bpm)."""
+        numbers = re.findall(r'\d+', msg)
+        for num_str in numbers:
+            num = int(num_str)
+            if 30 <= num <= 250:
+                return num
+        return None
+
+    def _extract_ta(self, msg: str) -> Optional[Tuple[int, int]]:
+        """Extrait TA."""
+        # Format X/Y
+        match = re.search(r'(\d{2,3})\s*/\s*(\d{2,3})', msg)
+        if match:
+            sys = int(match.group(1))
+            dia = int(match.group(2))
+            
+            # Format court
+            if sys < 50:
+                sys *= 10
+            if dia < 30:
+                dia *= 10
+            
+            if 50 <= sys <= 250 and 30 <= dia <= 150:
+                return (sys, dia)
+        
+        # Juste un nombre
+        numbers = re.findall(r'\d+', msg)
+        for num_str in numbers:
+            sys = int(num_str)
+            if 50 <= sys <= 250:
+                dia = int(sys * 0.67)
+                return (sys, dia)
+        
+        return None
+
+    def _extract_spo2(self, msg: str) -> Optional[int]:
+        """Extrait SpO2 (50-100%)."""
+        numbers = re.findall(r'\d+', msg)
+        for num_str in numbers:
+            num = int(num_str)
+            if 50 <= num <= 100:
+                return num
+        return None
+
+    def _extract_fr(self, msg: str) -> Optional[int]:
+        """Extrait FR (5-60/min)."""
+        numbers = re.findall(r'\d+', msg)
+        for num_str in numbers:
+            num = int(num_str)
+            if 5 <= num <= 60:
+                return num
+        return None
+
+    def _smart_next_step(self) -> str:
+        """
+        Détermine prochaine étape INTELLIGEMMENT.
+        
+        Vérifie ce qui manque vraiment.
+        """
+        # Identité complète ?
+        if not self.data.get("name") or not self.data.get("age") or not self.data.get("sex"):
+            return "identity"
+        
+        # Symptômes ?
         if not self.data.get("symptoms"):
             return "symptoms"
-
+        
+        # Constantes (dans l'ordre)
         v = self.data["vitals"]
-
+        
         if "Temperature" not in v:
             return "temperature"
         if "FC" not in v:
@@ -76,375 +371,229 @@ class TriageChatbotAPI:
             return "spo2"
         if "FR" not in v:
             return "fr"
-
+        
         return "done"
 
-    def _ask_with_api(self, step: str) -> str:
-        """Appel Mistral avec enrichissement RAG."""
-        try:
-            # Récupérer contexte RAG si symptômes présents
-            rag_context = ""
-            if self.retriever and self.data.get("symptoms"):
-                try:
-                    query = " ".join(self.data["symptoms"])
-                    # Supporte les deux interfaces (RAGRetriever et Retriever)
-                    if hasattr(self.retriever, "retrieve_context"):
-                        rag_context = self.retriever.retrieve_context(query=query, top_k=3)
-                    elif hasattr(self.retriever, "retrieve_and_format"):
-                        rag_context = self.retriever.retrieve_and_format(
-                            query=query, top_k=3, max_tokens=500
-                        )
-                    else:
-                        rag_context = ""
-                except Exception as e:
-                    print(f"RAG Error: {e}")
-                    rag_context = ""
+    def _smart_question(self, step: str, last_msg: str) -> str:
+        """
+        Génère question INTELLIGENTE.
+        
+        ADAPTE selon :
+        - Si user a dit "je ne sais pas"
+        - Nombre de tentatives
+        - Contexte
+        """
+        # Incrémenter tentatives
+        if step not in self.attempts:
+            self.attempts[step] = 0
+        self.attempts[step] += 1
+        
+        attempts = self.attempts[step]
+        
+        # User dit "je ne sais pas" ?
+        confused = any(w in last_msg.lower() for w in ['sais pas', 'sait pas', 'connais pas', 'aucune idée'])
+        
+        name = self.data.get("name", "")
+        
+        # ========== IDENTITÉ ==========
+        if step == "identity":
+            # Quelles infos manquent ?
+            missing = []
+            if not self.data.get("name"):
+                missing.append("prénom")
+            if not self.data.get("age"):
+                missing.append("âge")
+            if not self.data.get("sex"):
+                missing.append("sexe")
+            
+            if attempts == 1:
+                return f"""**Pour commencer, j'ai besoin de 3 informations simples :**
 
-            # Prompts système
-            prompts = {
-                "symptoms": """Tu es un assistant médical empathique. Le patient a déjà donné son identité.
-Demande maintenant son symptôme principal de manière naturelle et rassurante.
-Réponds en 1-2 phrases maximum.""",
-                "temperature": """Le patient a décrit ses symptômes.
-Demande maintenant sa température corporelle de manière claire.
-IMPORTANT: L'exemple DOIT inclure l'unité °C pour que le système reconnaisse la valeur.
-Exemple à donner: "38.5°C" ou "38.5 degrés"
-Sois bref et précis.""",
-                "fc": """Demande la fréquence cardiaque (pouls) du patient.
-IMPORTANT: L'exemple DOIT inclure l'unité bpm pour que le système reconnaisse la valeur.
-Exemple à donner: "80 bpm" ou "80 battements par minute"
-Reste concis.""",
-                "ta": """Demande la tension artérielle.
-Format attendu: deux nombres séparés par un slash (systolique/diastolique).
-Exemple à donner: "120/80"
-Une seule phrase.""",
-                "spo2": """Demande la saturation en oxygène (SpO2).
-IMPORTANT: L'exemple DOIT inclure le symbole % pour que le système reconnaisse la valeur.
-Exemple à donner: "97%" ou "saturation 97"
-Sois direct.""",
-                "fr": """Demande la fréquence respiratoire.
-IMPORTANT: L'exemple DOIT inclure l'unité /min pour que le système reconnaisse la valeur.
-Exemple à donner: "16/min" ou "16 respirations par minute"
-Concis et clair.""",
-                "done": """Toutes les informations sont collectées.
-Informe le patient que son dossier est complet et qu'il peut obtenir une prédiction.
-Sois rassurant et professionnel.
-Une phrase courte.""",
-            }
+• Votre **prénom**
+• Votre **âge**
+• Si vous êtes un **homme** ou une **femme**
 
-            system_prompt = prompts.get(step, "Guide le patient avec empathie.")
+**Exemple :** Jean, 30 ans, homme"""
+            else:
+                missing_str = " et ".join(missing)
+                return f"""Il me manque encore : **{missing_str}**
 
-            # Ajouter le contexte RAG au prompt si disponible
-            if rag_context:
-                system_prompt += f"""
+Pouvez-vous me donner cette information ?"""
+        
+        # ========== SYMPTÔMES ==========
+        elif step == "symptoms":
+            if attempts == 1:
+                return f"""Bonjour **{name}** ! 👋
 
-Contexte médical de référence (utilise ces informations pour guider tes questions):
-{rag_context}"""
+**Qu'est-ce qui vous amène aujourd'hui ?**
 
-            # Contexte des données déjà collectées
-            context = self._build_context()
+Dites-moi votre symptôme principal (ce qui vous gêne le plus)."""
+            else:
+                return f"""**{name}**, j'ai besoin de savoir ce qui ne va pas.
 
-            # Appel API Mistral
-            start = time.time()
-            resp = self.client.chat.complete(
-                model="mistral-small-latest",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": f"Contexte patient: {context}\n\nQuelle est ta question ?",
-                    },
-                ],
-                temperature=0.4,
-                max_tokens=100,
-            )
+**Exemples :** 
+• "J'ai mal au ventre"
+• "J'ai de la fièvre"
+• "Je tousse"
 
-            # Track API call
-            self._track_api(
-                resp.usage.prompt_tokens, resp.usage.completion_tokens, time.time() - start
-            )
+Qu'est-ce qui vous gêne ?"""
+        
+        # ========== TEMPÉRATURE ==========
+        elif step == "temperature":
+            if confused and attempts > 1:
+                return f"""**Pas de problème {name} !**
 
-            response = resp.choices[0].message.content.strip()
+On va mesurer votre température ensemble.
 
-            # Nettoyer la réponse si trop longue
-            if len(response) > 200:
-                response = response[:200] + "..."
+**Si vous avez un thermomètre :**
+• Mettez-le sous la langue ou sous le bras
+• Attendez le bip
+• Dites-moi le chiffre
 
-            return response
+**Si vous n'en avez pas :**
+• Tapez juste **"37"** (température normale)"""
+            elif attempts == 1:
+                return f"""**{name}**, quelle est votre **température** ?
 
-        except Exception as e:
-            print(f"API Error: {e}")
-            return self._ask_with_rules(step)
+**Exemples acceptés :**
+• 37.5
+• 38
+• 39°C
 
-    def _build_context(self) -> str:
-        """Construit contexte pour Mistral."""
-        parts = []
+*(Si vous ne savez pas, dites-le moi)*"""
+            else:
+                return f"""**{name}**, j'ai vraiment besoin de la température.
 
-        if self.data.get("name"):
-            parts.append(f"Prénom: {self.data['name']}")
-        if self.data.get("age"):
-            parts.append(f"Âge: {self.data['age']} ans")
-        if self.data.get("sex"):
-            sex = "Homme" if self.data["sex"] == "H" else "Femme"
-            parts.append(f"Sexe: {sex}")
-        if self.data.get("symptoms"):
-            parts.append(f"Symptômes: {', '.join(self.data['symptoms'])}")
+Tapez un chiffre entre **35 et 42**.
 
-        v = self.data["vitals"]
-        vitals_collected = []
-        if "Temperature" in v:
-            vitals_collected.append(f"Temp: {v['Temperature']}°C")
-        if "FC" in v:
-            vitals_collected.append(f"FC: {v['FC']} bpm")
-        if "TA_systolique" in v:
-            vitals_collected.append(f"TA: {v['TA_systolique']}/{v.get('TA_diastolique', '?')}")
-        if "SpO2" in v:
-            vitals_collected.append(f"SpO2: {v['SpO2']}%")
-        if "FR" in v:
-            vitals_collected.append(f"FR: {v['FR']}/min")
+**Si vous ne savez pas**, tapez juste **37** (température normale)."""
+        
+        # ========== FC ==========
+        elif step == "fc":
+            if confused and attempts > 1:
+                return f"""**Pas grave {name} !**
 
-        if vitals_collected:
-            parts.append(f"Constantes: {', '.join(vitals_collected)}")
+**Pour mesurer votre pouls :**
+1. Posez 2 doigts sur votre poignet
+2. Comptez les battements pendant 15 secondes
+3. Multipliez par 4
 
-        return " | ".join(parts) if parts else "Nouveau patient"
+**Ou tapez 80** (valeur moyenne normale)"""
+            elif attempts == 1:
+                return f"""**{name}**, quelle est votre **fréquence cardiaque** (pouls) ?
 
-    def _ask_with_rules(self, step: str) -> str:
-        """Fallback règles."""
-        responses = {
-            "identity": "Précisez votre âge et sexe.\nExemple : 25 ans homme",
-            "symptoms": "Quel est votre symptôme ?\nExemple : mal de tête / fièvre",
-            "temperature": "Quelle est votre température ?\nExemple : 38.5°C",
-            "fc": "Quel est votre pouls ?\nExemple : 80 bpm",
-            "ta": "Quelle est votre tension ?\nExemple : 120/80",
-            "spo2": "Quelle est votre saturation ?\nExemple : 97%",
-            "fr": "Quelle est votre fréquence respiratoire ?\nExemple : 16/min",
-            "done": "✅ Dossier complet. Cliquez 'Obtenir prédiction ML'.",
-        }
-        return responses.get(step, "Erreur")
+**Exemples :**
+• 80
+• 90 bpm
 
-    def _extract(self, msg: str):
-        """Extraction robuste."""
-        ml = msg.lower()
+*(Si vous ne savez pas, dites-le)*"""
+            else:
+                return f"""**{name}**, j'ai besoin du pouls.
 
-        # Âge
-        if not self.data.get("age"):
-            m = re.search(r"(\d{1,3})\s*ans?", ml)
-            if m:
-                age = int(m.group(1))
-                if 0 < age < 120:
-                    self.data["age"] = age
+Tapez un chiffre entre **50 et 150**.
 
-        # Sexe
-        if not self.data.get("sex"):
-            if "homme" in ml:
-                self.data["sex"] = "H"
-            elif "femme" in ml:
-                self.data["sex"] = "F"
+**Si vous ne savez pas**, tapez **80** (valeur normale)."""
+        
+        # ========== TA ==========
+        elif step == "ta":
+            if confused and attempts > 1:
+                return f"""**Ce n'est pas grave {name} !**
 
-        # Prénom
-        if not self.data.get("name"):
-            words = msg.split(",")
-            if words:
-                first = words[0].strip()
-                if len(first) >= 2 and first[0].isupper():
-                    self.data["name"] = first
+Si vous n'avez pas de tensiomètre, tapez :
 
-        # Symptômes - dictionnaire étendu par catégorie médicale
-        symp = {
-            # ══════════════════════════════════════════════════════════
-            # NEUROLOGIQUE
-            # ══════════════════════════════════════════════════════════
-            r"t[eéèê]te|c[ée]phal|migraine": "Céphalée",
-            r"vertige|tournis|[ée]tourdissement": "Vertiges",
-            r"syncope|[ée]vanoui|perte\s*de\s*connaissance": "Syncope",
-            r"convulsion|crise|[ée]pilep": "Convulsions",
-            r"confusion|d[ée]sorient": "Confusion",
-            r"paralys|faiblesse.*(bras|jambe|visage)": "Déficit neurologique",
-            r"trouble.*parole|difficult.*parler": "Trouble de la parole",
-            r"trouble.*vision|voi[rt]\s*flou|double": "Trouble visuel",
-            # ══════════════════════════════════════════════════════════
-            # CARDIOVASCULAIRE
-            # ══════════════════════════════════════════════════════════
-            r"poitrine|thorax|oppression": "Douleur thoracique",
-            r"palpitation|cœur\s*bat|tachycardie": "Palpitations",
-            r"jambe.*gonfl|œd[èe]me|enfl[ée]": "Œdème",
-            # ══════════════════════════════════════════════════════════
-            # RESPIRATOIRE
-            # ══════════════════════════════════════════════════════════
-            r"essouffl[éeè]|dyspn[ée]e|respir.*difficile": "Dyspnée",
-            r"toux": "Toux",
-            r"crachats?|expectoration": "Expectorations",
-            r"[ée]touff|suffoqu": "Détresse respiratoire",
-            # ══════════════════════════════════════════════════════════
-            # DIGESTIF
-            # ══════════════════════════════════════════════════════════
-            r"ventre|abdomen|estomac": "Douleur abdominale",
-            r"naus[ée]e|envie\s*de\s*vomir|mal\s*au\s*cœur": "Nausées",
-            r"vomi|r[ée]gurgit": "Vomissements",
-            r"diarrh[ée]e|selles?\s*liquides?": "Diarrhée",
-            r"constip|bloqu[ée]|transit": "Constipation",
-            r"sang.*selles|rectorragie": "Rectorragie",
-            r"br[uû]lure.*estomac|reflux|acidit": "Reflux gastrique",
-            r"difficult[ée].*avaler|dysphagie": "Dysphagie",
-            # ══════════════════════════════════════════════════════════
-            # URINAIRE
-            # ══════════════════════════════════════════════════════════
-            r"br[uû]l.*urin|cystite": "Brûlures mictionnelles",
-            r"sang.*urine|h[ée]maturie": "Hématurie",
-            r"envie.*fr[ée]quente|pollakiurie": "Pollakiurie",
-            r"difficult[ée].*uriner|r[ée]tention": "Dysurie",
-            # ══════════════════════════════════════════════════════════
-            # MUSCULO-SQUELETTIQUE
-            # ══════════════════════════════════════════════════════════
-            r"dos|lombaire|lumbago|sciatique": "Lombalgie",
-            r"genou": "Gonalgie",
-            r"hanche": "Coxalgie",
-            r"cheville|entorse": "Douleur cheville",
-            r"[ée]paule": "Omalgie",
-            r"nuque|cervical|torticolis": "Cervicalgie",
-            r"articulation|arthr": "Arthralgie",
-            r"fracture|cass[ée]": "Traumatisme osseux",
-            r"bras": "Douleur membre supérieur",
-            r"jambe|mollet": "Douleur membre inférieur",
-            # ══════════════════════════════════════════════════════════
-            # ORL / OPHTALMOLOGIE
-            # ══════════════════════════════════════════════════════════
-            r"gorge|angine|pharyn": "Odynophagie",
-            r"oreille|otite|acouph[èe]ne": "Otalgie",
-            r"nez.*bouch|rhume|sinusite": "Rhinite/Sinusite",
-            r"saign.*nez|[ée]pistaxis": "Épistaxis",
-            r"œil.*rouge|conjonctiv": "Conjonctivite",
-            r"œil.*douleur": "Douleur oculaire",
-            # ══════════════════════════════════════════════════════════
-            # DERMATOLOGIE
-            # ══════════════════════════════════════════════════════════
-            r"[ée]ruption|bouton|rash|plaques?": "Éruption cutanée",
-            r"d[ée]mangeaison|prurit|gratt": "Prurit",
-            r"br[uû]lure(?!.*estomac)": "Brûlure",
-            r"plaie|coupure|blessure": "Plaie",
-            r"abc[èe]s|furoncle": "Abcès",
-            # ══════════════════════════════════════════════════════════
-            # GÉNÉRAL / PSYCHIATRIQUE
-            # ══════════════════════════════════════════════════════════
-            r"fi[eéèê]vre|temp[éeè]rature|frisson": "Fièvre",
-            r"fatigue|[ée]puis[ée]|asth[ée]nie": "Asthénie",
-            r"perte.*poids|amaigri": "Amaigrissement",
-            r"sueur|transpir": "Sueurs",
-            r"insomnie|dort.*mal|sommeil": "Trouble du sommeil",
-            r"anxi[ée]t[ée]|stress|angoiss|panique": "Anxiété",
-            r"allergi|r[ée]action|urticaire": "Réaction allergique",
-            r"d[ée]prim|triste|moral": "Syndrome dépressif",
-        }
+**120/80** (tension normale)"""
+            elif attempts == 1:
+                return f"""**{name}**, quelle est votre **tension artérielle** ?
 
-        for p, s in symp.items():
-            if s and re.search(p, ml):  # Ignorer les patterns avec valeur vide
-                if s not in self.data["symptoms"]:
-                    self.data["symptoms"].append(s)
+**Format :** 2 chiffres séparés par un /
 
-        # Température - exiger contexte (°, degré, température, temp)
-        if "Temperature" not in self.data["vitals"]:
-            m = re.search(r"(\d{2}[.,]?\d?)\s*(?:°|degr|temp)", ml)
-            if m:
-                t = float(m.group(1).replace(",", "."))
-                if 35 <= t <= 43:
-                    self.data["vitals"]["Temperature"] = t
+**Exemples :**
+• 120/80
+• 13/8
+• 14/9
 
-        # FC - exiger contexte (bpm, battement, pouls, cardiaque, fc)
-        if "FC" not in self.data["vitals"]:
-            m = re.search(r"(\d{2,3})\s*(?:bpm|battement|pouls|cardiaque|fc)", ml)
-            if m:
-                fc = int(m.group(1))
-                if 30 <= fc <= 220:
-                    self.data["vitals"]["FC"] = fc
+*(Si vous ne savez pas, dites-le)*"""
+            else:
+                return f"""**{name}**, j'ai besoin de la tension.
 
-        # TA - format explicite avec slash
-        if "TA_systolique" not in self.data["vitals"]:
-            m = re.search(r"(\d{2,3})\s*/\s*(\d{2,3})", ml)
-            if m:
-                self.data["vitals"]["TA_systolique"] = int(m.group(1))
-                self.data["vitals"]["TA_diastolique"] = int(m.group(2))
+**Format :** X/Y (exemple: 120/80)
 
-        # SpO2 - exiger contexte (%, sat, spo, oxygène)
-        if "SpO2" not in self.data["vitals"]:
-            m = re.search(r"(\d{2,3})\s*(?:%|sat|spo|oxyg)", ml)
-            if m:
-                spo2 = int(m.group(1))
-                if 50 <= spo2 <= 100:
-                    self.data["vitals"]["SpO2"] = spo2
+**Si vous ne savez pas**, tapez **120/80** (normale)."""
+        
+        # ========== SPO2 ==========
+        elif step == "spo2":
+            if confused and attempts > 1:
+                return f"""**Pas de souci {name} !**
 
-        # FR - exiger contexte (respir, /min, fr)
-        if "FR" not in self.data["vitals"]:
-            m = re.search(r"(\d{1,2})\s*(?:respir|/min|fr\b)", ml)
-            if m:
-                fr = int(m.group(1))
-                if 5 <= fr <= 60:
-                    self.data["vitals"]["FR"] = fr
+Si vous n'avez pas d'oxymètre, tapez :
+
+**98** (saturation normale)"""
+            elif attempts == 1:
+                return f"""**{name}**, quelle est votre **saturation en oxygène** (SpO2) ?
+
+**Exemples :**
+• 98
+• 95%
+
+*(Si vous ne savez pas, dites-le)*"""
+            else:
+                return f"""**{name}**, j'ai besoin du SpO2.
+
+Tapez un chiffre entre **90 et 100**.
+
+**Si vous ne savez pas**, tapez **98** (normale)."""
+        
+        # ========== FR ==========
+        elif step == "fr":
+            if confused and attempts > 1:
+                return f"""**Ce n'est pas grave {name} !**
+
+**Pour compter :**
+• Respirez normalement
+• Comptez combien de fois vous respirez en 1 minute
+
+**Ou tapez 16** (respiration normale)"""
+            elif attempts == 1:
+                return f"""**{name}**, quelle est votre **fréquence respiratoire** ?
+
+**Combien de fois respirez-vous par minute ?**
+
+**Exemples :**
+• 16
+• 18/min
+
+*(Si vous ne savez pas, dites-le)*"""
+            else:
+                return f"""**{name}**, dernière info !
+
+Tapez un chiffre entre **12 et 25**.
+
+**Si vous ne savez pas**, tapez **16** (normale)."""
+        
+        return "Une question ?"
 
     def _track_latency(self, duration: float):
-        """Track latence chatbot."""
+        """Track latence."""
         try:
-            import sys
-            from pathlib import Path
-
-            sys.path.insert(0, str(Path(__file__).parent.parent))
-            from src.monitoring.metrics_tracker import get_tracker
-
-            get_tracker().track_latency("Chatbot", "chat", duration)
-        except:
-            pass
-
-    def _track_api(self, tokens_in: int, tokens_out: int, latency: float):
-        """Track appel API Mistral."""
-        try:
-            import sys
-            from pathlib import Path
-
-            sys.path.insert(0, str(Path(__file__).parent.parent))
-            from src.monitoring.metrics_tracker import get_tracker
-
-            get_tracker().track_api_call(
-                service="mistral",
-                model="mistral-small-latest",
-                tokens_input=tokens_in,
-                tokens_output=tokens_out,
-                latency=latency,
-                success=True,
-            )
+            from ..monitoring.metrics_tracker import get_tracker
+            tracker = get_tracker()
+            tracker.track_latency("Chatbot", "message", duration)
         except:
             pass
 
     def is_ready_for_prediction(self) -> bool:
-        """Vérifie si 5/5 constantes."""
-        v = self.data["vitals"]
-        return (
-            self.data.get("age")
-            and self.data.get("sex")
-            and self.data.get("symptoms")
-            and all(k in v for k in ["Temperature", "FC", "TA_systolique", "SpO2", "FR"])
-        )
+        """Vérifie si prêt."""
+        required = ["Temperature", "FC", "TA_systolique", "SpO2", "FR"]
+        return all(k in self.data["vitals"] for k in required)
 
     def get_summary(self) -> Dict:
-        """Résumé pour prédiction ML."""
+        """Résumé pour ML."""
         return {
             "patient_info": {
                 "name": self.data.get("name"),
                 "age": self.data.get("age"),
-                "sex": "Femme" if self.data.get("sex") == "F" else "Homme",
+                "sex": self.data.get("sex"),
             },
             "symptoms": self.data.get("symptoms", []),
             "vitals": self.data["vitals"],
-            "messages": [
-                m.get("content", m) if isinstance(m, dict) else m for m in self.data["messages"]
-            ],
-        }
-
-    def reset(self):
-        """Reset complet."""
-        self.data = {
-            "name": None,
-            "age": None,
-            "sex": None,
-            "symptoms": [],
-            "vitals": {},
-            "messages": [],
         }
